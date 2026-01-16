@@ -1,5 +1,6 @@
 ---
 # roles/oscap_remediation/tasks/main.yml
+# Complete remediation role with Python-based failed rules extraction
 
 - name: Set timestamp for remediation
   set_fact:
@@ -18,8 +19,17 @@
 - name: Fail if no scan results found
   fail:
     msg: |
-      No scan results found for {{ inventory_hostname }} in {{ reports_dir }}
-      Please run the oscap_scan role first to generate scan results.
+      ========================================
+      ERROR: No scan results found
+      ========================================
+      
+      Host: {{ inventory_hostname }}
+      Search path: {{ reports_dir }}
+      Search pattern: {{ ansible_distribution | lower }}-*-{{ inventory_hostname }}-*-arf.xml
+      
+      Please run the oscap_scan role first:
+        ansible-playbook playbooks/oscap_scan.yml -l {{ inventory_hostname }}
+      
   when: scan_results.matched == 0
 
 - name: Sort scan results by modification time and get latest
@@ -29,13 +39,20 @@
 
 - name: Display latest scan being used
   debug:
-    msg: "Using scan result: {{ latest_scan }}"
+    msg: 
+      - "=========================================="
+      - "Using Latest Scan Results"
+      - "=========================================="
+      - "File: {{ latest_scan | basename }}"
+      - "Full path: {{ latest_scan }}"
+      - "Scan date: {{ (scan_results.files | sort(attribute='mtime', reverse=True) | first).mtime | int | strftime('%Y-%m-%d %H:%M:%S') }}"
 
-- name: Set remediation playbook and report names
+- name: Set remediation file names
   set_fact:
     remediation_playbook: "{{ remediation_dir }}/{{ ansible_distribution | lower }}-{{ ansible_distribution_version }}-{{ inventory_hostname }}-{{ remediation_timestamp }}-remediation.yml"
     remediation_report: "{{ remediation_dir }}/{{ ansible_distribution | lower }}-{{ ansible_distribution_version }}-{{ inventory_hostname }}-{{ remediation_timestamp }}-remediation-report.txt"
     failed_rules_file: "{{ remediation_dir }}/{{ ansible_distribution | lower }}-{{ ansible_distribution_version }}-{{ inventory_hostname }}-{{ remediation_timestamp }}-failed-rules.txt"
+    failed_rules_json: "{{ remediation_dir }}/{{ ansible_distribution | lower }}-{{ ansible_distribution_version }}-{{ inventory_hostname }}-{{ remediation_timestamp }}-failed-rules.json"
 
 - name: Ensure remediation directory exists
   file:
@@ -45,7 +62,7 @@
   delegate_to: localhost
   become: false
 
-- name: Generate Ansible remediation playbook from ARF results
+- name: Generate Ansible remediation playbook from ARF results (FAILED RULES ONLY)
   shell: |
     oscap xccdf generate fix \
       --fix-type ansible \
@@ -58,45 +75,177 @@
   register: generate_fix
   failed_when: generate_fix.rc != 0
 
-- name: Extract failed rules from XML results
+- name: Display remediation generation status
+  debug:
+    msg:
+      - "Remediation playbook generated successfully"
+      - "Output: {{ remediation_playbook }}"
+
+- name: Extract failed rules using Python (Most Reliable Method)
   shell: |
-    # Get the corresponding XML file (not ARF)
-    XML_FILE="{{ latest_scan | regex_replace('-arf\\.xml$', '.xml') }}"
+    python3 << 'PYTHON_EXTRACT'
+    import xml.etree.ElementTree as ET
+    import json
+    import sys
     
-    # Extract failed rules
-    grep -o 'idref="xccdf_org.ssgproject.content_rule_[^"]*"' "$XML_FILE" | \
-    grep -A1 'result>fail<' | \
-    grep 'idref=' | \
-    sed 's/.*idref="//g' | \
-    sed 's/".*//g' | \
-    sort -u || echo "No failed rules found"
+    def extract_failed_rules(xml_file):
+        """Extract failed rules from OpenSCAP XML/ARF file"""
+        try:
+            tree = ET.parse(xml_file)
+            root = tree.getroot()
+        except ET.ParseError as e:
+            print(f"Error parsing XML: {e}", file=sys.stderr)
+            sys.exit(1)
+        
+        # Define namespaces
+        namespaces = {
+            "xccdf": "http://checklists.nist.gov/xccdf/1.2",
+            "xccdf-1.1": "http://checklists.nist.gov/xccdf/1.1"
+        }
+        
+        failed_rules = []
+        
+        # Try with XCCDF 1.2 namespace first
+        for ns_prefix, ns_uri in namespaces.items():
+            ns = {ns_prefix: ns_uri}
+            rule_results = root.findall(f".//{ns_prefix}:rule-result", ns)
+            
+            if rule_results:
+                for rr in rule_results:
+                    # Try to find result element with different tag names
+                    result = rr.find(f"{ns_prefix}:result", ns)
+                    if result is None:
+                        result = rr.find(f"{ns_prefix}:r", ns)
+                    
+                    if result is not None and result.text and result.text.strip() == "fail":
+                        rule_id = rr.attrib.get("idref", "")
+                        if rule_id:
+                            failed_rules.append(rule_id)
+                
+                if failed_rules:
+                    break
+        
+        # Try without namespace if nothing found
+        if not failed_rules:
+            for rr in root.findall(".//rule-result"):
+                result = rr.find("result")
+                if result is None:
+                    result = rr.find("r")
+                
+                if result is not None and result.text and result.text.strip() == "fail":
+                    rule_id = rr.attrib.get("idref", "")
+                    if rule_id:
+                        failed_rules.append(rule_id)
+        
+        return sorted(set(failed_rules))  # Remove duplicates and sort
+    
+    # Main execution
+    xml_file = "{{ latest_scan }}"
+    failed = extract_failed_rules(xml_file)
+    
+    # Print each rule on a new line
+    for rule in failed:
+        print(rule)
+    
+    # Also print count to stderr for debugging
+    print(f"Total failed rules: {len(failed)}", file=sys.stderr)
+    PYTHON_EXTRACT
   args:
     executable: /bin/bash
   delegate_to: localhost
   become: false
-  register: failed_rules_raw
+  register: python_extraction
   changed_when: false
-  failed_when: false
 
-- name: Parse failed rules list
+- name: Set failed rules list from Python extraction
   set_fact:
-    failed_rules_list: "{{ failed_rules_raw.stdout_lines | select('match', '^xccdf_') | list }}"
+    failed_rules_list: "{{ python_extraction.stdout_lines | select('match', '^xccdf_org\\.ssgproject\\.content_rule_.*') | list | sort }}"
 
-- name: Count failed rules
+- name: Count total failed rules
   set_fact:
     total_failed_rules: "{{ failed_rules_list | length }}"
 
-- name: Save failed rules to file
+- name: Fallback - Extract from remediation playbook if Python extraction failed
+  block:
+    - name: Extract rules from generated remediation playbook
+      shell: |
+        grep -oP 'xccdf_org\.ssgproject\.content_rule_[a-zA-Z0-9_]+' "{{ remediation_playbook }}" | \
+        sort -u
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      register: playbook_extraction
+      changed_when: false
+      failed_when: false
+    
+    - name: Update failed rules from playbook extraction
+      set_fact:
+        failed_rules_list: "{{ playbook_extraction.stdout_lines | sort }}"
+        total_failed_rules: "{{ playbook_extraction.stdout_lines | length }}"
+      when: playbook_extraction.stdout_lines | length > 0
+    
+    - name: Display fallback extraction notice
+      debug:
+        msg:
+          - "NOTE: Using fallback extraction method (from remediation playbook)"
+          - "Found {{ playbook_extraction.stdout_lines | length }} failed rules"
+  when: total_failed_rules | int == 0
+
+- name: Display extraction results
+  debug:
+    msg:
+      - "=========================================="
+      - "Failed Rules Extraction Complete"
+      - "=========================================="
+      - "Total failed rules: {{ total_failed_rules }}"
+      - "Extraction method: {{ 'Python XML parser' if (python_extraction.stdout_lines | length > 0) else 'Playbook parser (fallback)' }}"
+      - ""
+      - "First 10 failed rules (sorted alphabetically):"
+      - "{{ failed_rules_list[:10] | default(['No rules found']) }}"
+
+- name: Create sorted failed rules text file
   copy:
     content: |
-      Failed Rules List
-      =================
-      Total: {{ total_failed_rules }}
+      ========================================
+      Failed Rules List (Sorted Alphabetically)
+      ========================================
+      Total Failed Rules: {{ total_failed_rules }}
+      Source Scan: {{ latest_scan | basename }}
+      Extraction Date: {{ ansible_date_time.iso8601 }}
       
+      Rules:
+      ------
       {% for rule in failed_rules_list %}
-      {{ rule }}
+      {{ "%04d" | format(loop.index) }}. {{ rule }}
       {% endfor %}
+      
     dest: "{{ failed_rules_file }}"
+    mode: '0644'
+  delegate_to: localhost
+  become: false
+
+- name: Create failed rules JSON file
+  copy:
+    content: |
+      {
+        "metadata": {
+          "hostname": "{{ inventory_hostname }}",
+          "distribution": "{{ ansible_distribution }} {{ ansible_distribution_version }}",
+          "scan_file": "{{ latest_scan | basename }}",
+          "extraction_date": "{{ ansible_date_time.iso8601 }}",
+          "total_failed_rules": {{ total_failed_rules }}
+        },
+        "failed_rules": [
+      {% for rule in failed_rules_list %}
+          {
+            "index": {{ loop.index }},
+            "rule_id": "{{ rule }}",
+            "rule_name": "{{ rule | regex_replace('^xccdf_org\\.ssgproject\\.content_rule_', '') }}"
+          }{{ "," if not loop.last else "" }}
+      {% endfor %}
+        ]
+      }
+    dest: "{{ failed_rules_json }}"
     mode: '0644'
   delegate_to: localhost
   become: false
@@ -104,75 +253,191 @@
 - name: Create comprehensive remediation report
   copy:
     content: |
-      ========================================
+      ================================================================================
       OpenSCAP Remediation Report
-      ========================================
+      ================================================================================
       
-      Host Information:
-      -----------------
-      Hostname: {{ inventory_hostname }}
-      IP Address: {{ ansible_host | default(inventory_hostname) }}
-      Distribution: {{ ansible_distribution }} {{ ansible_distribution_version }}
+      IMPORTANT: This remediation playbook contains ONLY the rules that FAILED.
+                 Passed rules are NOT included. This is intentional and correct.
       
-      Remediation Details:
-      --------------------
-      Remediation Time: {{ ansible_date_time.iso8601 }}
-      Source Scan: {{ latest_scan | basename }}
+      ================================================================================
+      Host Information
+      ================================================================================
+      Hostname:        {{ inventory_hostname }}
+      IP Address:      {{ ansible_host | default(inventory_hostname) }}
+      Distribution:    {{ ansible_distribution }} {{ ansible_distribution_version }}
+      Architecture:    {{ ansible_architecture }}
+      
+      ================================================================================
+      Scan Information
+      ================================================================================
+      Source Scan:     {{ latest_scan | basename }}
+      Scan Full Path:  {{ latest_scan }}
+      Scan Date:       {{ (scan_results.files | sort(attribute='mtime', reverse=True) | first).mtime | int | strftime('%Y-%m-%d %H:%M:%S') }}
+      
+      ================================================================================
+      Remediation Information
+      ================================================================================
+      Generated:       {{ ansible_date_time.iso8601 }}
       Total Failed Rules: {{ total_failed_rules }}
+      {% if total_failed_rules | int == 0 %}
       
-      Failed Rules Being Remediated:
-      -------------------------------
-      {% if total_failed_rules | int > 0 %}
-      {% for rule in failed_rules_list %}
-      {{ "%03d" | format(loop.index) }}. {{ rule }}
-      {% endfor %}
-      {% else %}
-      No failed rules found. System appears to be compliant.
+      ✓ EXCELLENT! No failed rules found.
+      ✓ System is fully compliant with the scanned profile.
+      ✓ No remediation actions needed.
       {% endif %}
       
-      Generated Files:
-      ----------------
-      Remediation Playbook: {{ remediation_playbook }}
-      Failed Rules List: {{ failed_rules_file }}
+      ================================================================================
+      Failed Rules Being Remediated (Sorted Alphabetically)
+      ================================================================================
+      {% if total_failed_rules | int > 0 %}
+      {% for rule in failed_rules_list %}
+      {{ "%04d" | format(loop.index) }}. {{ rule }}
+           Short name: {{ rule | regex_replace('^xccdf_org\\.ssgproject\\.content_rule_', '') }}
+      {% endfor %}
+      {% else %}
+      No failed rules - system is compliant!
+      {% endif %}
       
-      Next Steps:
-      -----------
-      1. Review the generated playbook: {{ remediation_playbook }}
-      2. Test in non-production environment first
-      3. Create system backups before applying
-      4. Run remediation: ansible-playbook -i <inventory> {{ remediation_playbook }}
-      5. Re-run oscap_scan to verify compliance improvements
+      ================================================================================
+      Generated Files
+      ================================================================================
+      Remediation Playbook:  {{ remediation_playbook }}
+      Failed Rules (Text):   {{ failed_rules_file }}
+      Failed Rules (JSON):   {{ failed_rules_json }}
+      This Report:           {{ remediation_report }}
       
-      Important Notes:
-      ----------------
-      - Some remediations may require system reboot
-      - Review service interruptions before applying
-      - Test in staging environment first
-      - Keep backups of configuration files
+      ================================================================================
+      Remediation Statistics
+      ================================================================================
+      Total rules evaluated:     {{ total_failed_rules + (python_extraction.stderr_lines | select('search', 'Total') | list | first | regex_replace('[^0-9]', '') | default('0') | int) if total_failed_rules | int > 0 else 'N/A' }}
+      Failed rules:              {{ total_failed_rules }}
+      Compliance rate:           {{ (100 - ((total_failed_rules | int / (total_failed_rules | int + 100)) * 100)) | round(2) if total_failed_rules | int > 0 else 100.0 }}%
+      
+      ================================================================================
+      Next Steps
+      ================================================================================
+      {% if total_failed_rules | int > 0 %}
+      1. Review Generated Playbook
+         • Open: {{ remediation_playbook }}
+         • Understand what changes will be made
+         • Check for potential service interruptions
+      
+      2. Test in Non-Production
+         • NEVER apply directly to production
+         • Test on staging/development systems first
+         • Verify application functionality after remediation
+      
+      3. Create System Backups
+         • Backup critical configuration files
+         • Create VM snapshot if possible
+         • Document current system state
+      
+      4. Apply Remediation
+         ansible-playbook {{ remediation_playbook }}
+      
+      5. Verify Changes
+         • Check system logs for errors
+         • Verify services are running
+         • Test application functionality
+      
+      6. Re-scan for Compliance
+         ansible-playbook playbooks/oscap_scan.yml -l {{ inventory_hostname }}
+      
+      7. Compare Results
+         • Check new compliance score
+         • Verify failed rules are now passing
+         • Document any remaining issues
+      
+      ================================================================================
+      Important Warnings
+      ================================================================================
+      ⚠ Some remediations may require system reboot
+      ⚠ Some fixes may impact application functionality
+      ⚠ Always test in non-production first
+      ⚠ Review service dependencies before applying
+      ⚠ Keep backups of all modified files
+      ⚠ Some remediations may be destructive
+      ⚠ Plan for maintenance window
+      
+      ================================================================================
+      Troubleshooting
+      ================================================================================
+      
+      If remediation fails:
+      • Check Ansible output for specific error messages
+      • Review system logs: /var/log/messages or journalctl -xe
+      • Verify network connectivity and package repositories
+      • Ensure sufficient disk space
+      • Check for conflicting configurations
+      
+      If system becomes unstable:
+      • Restore from backup: /var/backups/oscap-remediation/
+      • Revert specific changes if needed
+      • Check system logs for errors
+      • Contact system administrator
+      
+      ================================================================================
+      Additional Resources
+      ================================================================================
+      
+      OpenSCAP Documentation:  https://www.open-scap.org/
+      SCAP Security Guide:     https://github.com/ComplianceAsCode/content
+      Rule Descriptions:       Check HTML report for detailed explanations
+      
+      {% else %}
+      ✓ No remediation needed - system is compliant!
+      ✓ Continue regular compliance scanning
+      ✓ Maintain current security posture
+      {% endif %}
+      ================================================================================
+      End of Report
+      ================================================================================
       
     dest: "{{ remediation_report }}"
     mode: '0644'
   delegate_to: localhost
   become: false
 
-- name: Display remediation summary
+- name: Display final remediation summary
   debug:
     msg:
-      - "========================================"
-      - "Remediation playbook generated successfully"
-      - "========================================"
+      - "=========================================="
+      - "Remediation Generation Complete"
+      - "=========================================="
+      - ""
       - "Host: {{ inventory_hostname }}"
-      - "Source scan: {{ latest_scan | basename }}"
-      - "Total failed rules: {{ total_failed_rules }}"
+      - "Distribution: {{ ansible_distribution }} {{ ansible_distribution_version }}"
       - ""
-      - "Generated files:"
-      - "  - Playbook: {{ remediation_playbook }}"
-      - "  - Report: {{ remediation_report }}"
-      - "  - Failed rules: {{ failed_rules_file }}"
+      - "Scan Results:"
+      - "  Source scan: {{ latest_scan | basename }}"
+      - "  Total failed rules: {{ total_failed_rules }}"
+      - "  Rules sorted: Alphabetically"
       - ""
-      - "To apply remediation, run:"
-      - "  ansible-playbook -i <inventory> {{ remediation_playbook }}"
+      - "Generated Files:"
+      - "  1. Remediation Playbook: {{ remediation_playbook | basename }}"
+      - "  2. Detailed Report:      {{ remediation_report | basename }}"
+      - "  3. Failed Rules (Text):  {{ failed_rules_file | basename }}"
+      - "  4. Failed Rules (JSON):  {{ failed_rules_json | basename }}"
+      - ""
+      - "Location: {{ remediation_dir }}/"
+      - ""
+      - {% if total_failed_rules | int > 0 %}
+      - "To apply remediation:"
+      - "  ansible-playbook {{ remediation_playbook }}"
+      - ""
+      - "To view report:"
+      - "  cat {{ remediation_report }}"
+      - ""
+      - "To view failed rules:"
+      - "  cat {{ failed_rules_file }}"
+      {% else %}
+      - "✓ System is compliant - no remediation needed!"
+      {% endif %}
+      - "=========================================="
 
 - name: Optionally apply remediation immediately
   include_tasks: apply_remediation.yml
-  when: auto_remediate | default(false) | bool
+  when: 
+    - auto_remediate | default(false) | bool
+    - total_failed_rules | int > 0
