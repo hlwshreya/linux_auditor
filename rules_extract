@@ -1,0 +1,21 @@
+import xml.etree.ElementTree as ET
+import json
+
+tree = ET.parse("scan-results.xml")  # or .arf.xml
+root = tree.getroot()
+
+ns = {
+    "xccdf": "http://checklists.nist.gov/xccdf/1.2"
+}
+
+failed = []
+
+for rr in root.findall(".//xccdf:rule-result", ns):
+    result = rr.find("xccdf:result", ns)
+    if result is not None and result.text == "fail":
+        failed.append({
+            "rule_id": rr.attrib.get("idref"),
+            "result": "fail"
+        })
+
+print(json.dumps(failed, indent=2))
