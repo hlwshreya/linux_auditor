@@ -422,7 +422,7 @@
       - ""
       - "Location: {{ remediation_dir }}/"
       - ""
-      - {% if total_failed_rules | int > 0 %}
+      {% if total_failed_rules | int > 0 %}
       - "To apply remediation:"
       - "  ansible-playbook {{ remediation_playbook }}"
       - ""
