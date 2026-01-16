@@ -1,0 +1,49 @@
+---
+# Base path for ComplianceAsCode content
+oscap_content_path: "/opt"
+
+# Default compliance profile (CIS benchmark)
+scan_profile: "xccdf_org.ssgproject.content_profile_cis"
+
+# Directory to store scan reports on control node
+reports_dir: "/var/lib/oscap/reports"
+
+# ComplianceAsCode version directory name
+# IMPORTANT: This should match your extracted directory name in /opt
+cac_version: "scap-security-guide-0.1.72"
+
+# Datastream mapping for different OS distributions
+datastream_map:
+  # Red Hat Enterprise Linux
+  "RedHat-7": "{{ cac_version }}/ssg-rhel7-ds.xml"
+  "RedHat-8": "{{ cac_version }}/ssg-rhel8-ds.xml"
+  "RedHat-9": "{{ cac_version }}/ssg-rhel9-ds.xml"
+  
+  # CentOS
+  "CentOS-7": "{{ cac_version }}/ssg-centos7-ds.xml"
+  "CentOS-8": "{{ cac_version }}/ssg-centos8-ds.xml"
+  
+  # Oracle Linux
+  "OracleLinux-7": "{{ cac_version }}/ssg-ol7-ds.xml"
+  "OracleLinux-8": "{{ cac_version }}/ssg-ol8-ds.xml"
+  "OracleLinux-9": "{{ cac_version }}/ssg-ol9-ds.xml"
+  
+  # Ubuntu
+  "Ubuntu-18": "{{ cac_version }}/ssg-ubuntu1804-ds.xml"
+  "Ubuntu-20": "{{ cac_version }}/ssg-ubuntu2004-ds.xml"
+  "Ubuntu-22": "{{ cac_version }}/ssg-ubuntu2204-ds.xml"
+  
+  # Debian
+  "Debian-10": "{{ cac_version }}/ssg-debian10-ds.xml"
+  "Debian-11": "{{ cac_version }}/ssg-debian11-ds.xml"
+  "Debian-12": "{{ cac_version }}/ssg-debian12-ds.xml"
+  
+  # SUSE Linux Enterprise Server
+  "SLES-12": "{{ cac_version }}/ssg-sle12-ds.xml"
+  "SLES-15": "{{ cac_version }}/ssg-sle15-ds.xml"
+  
+  # Default fallback
+  "default": "{{ cac_version }}/ssg-rhel8-ds.xml"
+
+# SSH port for oscap-ssh
+ansible_port: 22

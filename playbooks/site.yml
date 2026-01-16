@@ -1,0 +1,19 @@
+---
+# playbooks/site.yml
+- name: OpenSCAP Compliance Scan
+  hosts: all_servers
+  become: yes
+  vars:
+    # Override defaults if needed
+    # scan_profile: "xccdf_org.ssgproject.content_profile_cis"
+  roles:
+    - oscap_scan
+
+# - name: OpenSCAP Remediation
+#   hosts: all_servers
+#   become: yes
+#   vars:
+#     # Enable auto_remediate to apply fixes immediately
+#     # auto_remediate: true
+#   roles:
+#     - oscap_remediation

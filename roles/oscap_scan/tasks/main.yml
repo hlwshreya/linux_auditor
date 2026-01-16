@@ -1,0 +1,121 @@
+---
+# roles/oscap_scan/tasks/main.yml
+
+- name: Include OS-specific variables
+  include_vars: "{{ item }}"
+  with_first_found:
+    - "{{ ansible_distribution }}-{{ ansible_distribution_major_version }}.yml"
+    - "{{ ansible_distribution }}.yml"
+    - "default.yml"
+  delegate_to: localhost
+
+- name: Set datastream file based on OS distribution
+  set_fact:
+    selected_datastream: "{{ datastream_map[ansible_distribution ~ '-' ~ ansible_distribution_major_version] | default(datastream_map['default']) }}"
+
+- name: Set timestamp for scan
+  set_fact:
+    scan_timestamp: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+  delegate_to: localhost
+  run_once: false
+
+- name: Set comprehensive report names
+  set_fact:
+    report_basename: "{{ ansible_distribution | lower }}-{{ ansible_distribution_version }}-{{ inventory_hostname }}-{{ scan_timestamp }}"
+
+- name: Set full report paths
+  set_fact:
+    html_report: "{{ reports_dir }}/{{ report_basename }}.html"
+    xml_report: "{{ reports_dir }}/{{ report_basename }}.xml"
+    arf_report: "{{ reports_dir }}/{{ report_basename }}-arf.xml"
+
+- name: Ensure reports directory exists on control node
+  file:
+    path: "{{ reports_dir }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  become: false
+
+- name: Check if datastream file exists on control node
+  stat:
+    path: "{{ oscap_content_path }}/{{ selected_datastream }}"
+  register: datastream_stat
+  delegate_to: localhost
+  become: false
+
+- name: Fail if datastream file not found
+  fail:
+    msg: "Datastream file not found: {{ oscap_content_path }}/{{ selected_datastream }}"
+  when: not datastream_stat.stat.exists
+
+- name: Display scan information
+  debug:
+    msg:
+      - "Starting scan for {{ inventory_hostname }}"
+      - "Distribution: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+      - "Datastream: {{ selected_datastream }}"
+      - "Profile: {{ scan_profile }}"
+
+- name: Install OpenSCAP scanner on managed nodes
+  include_tasks: install_scanner.yml
+
+- name: Perform OpenSCAP scan using oscap-ssh
+  shell: |
+    oscap-ssh {{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }} {{ ansible_port | default(22) }} xccdf eval \
+      --profile {{ scan_profile }} \
+      --results {{ xml_report }} \
+      --results-arf {{ arf_report }} \
+      --report {{ html_report }} \
+      {{ oscap_content_path }}/{{ selected_datastream }}
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  register: scan_result
+  failed_when: false
+  changed_when: scan_result.rc == 2
+
+- name: Set scan status
+  set_fact:
+    scan_status: "{{ 'PASS' if scan_result.rc == 0 else 'FAIL' if scan_result.rc == 2 else 'ERROR' }}"
+
+- name: Display scan summary
+  debug:
+    msg:
+      - "========================================"
+      - "Scan completed for {{ inventory_hostname }}"
+      - "========================================"
+      - "Distribution: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+      - "Datastream: {{ selected_datastream }}"
+      - "Profile: {{ scan_profile }}"
+      - "Return code: {{ scan_result.rc }} (0=pass, 2=fail, other=error)"
+      - "Status: {{ scan_status }}"
+      - ""
+      - "Reports saved:"
+      - "  - HTML: {{ html_report }}"
+      - "  - XML: {{ xml_report }}"
+      - "  - ARF: {{ arf_report }}"
+
+- name: Create scan metadata file
+  copy:
+    content: |
+      Scan Metadata
+      =============
+      Hostname: {{ inventory_hostname }}
+      IP Address: {{ ansible_host | default(inventory_hostname) }}
+      Distribution: {{ ansible_distribution }} {{ ansible_distribution_version }}
+      Scan Time: {{ ansible_date_time.iso8601 }}
+      Datastream: {{ selected_datastream }}
+      Profile: {{ scan_profile }}
+      Scan Result: {{ scan_status }}
+      Return Code: {{ scan_result.rc }}
+      
+      Report Files:
+      - HTML: {{ html_report }}
+      - XML: {{ xml_report }}
+      - ARF: {{ arf_report }}
+    dest: "{{ reports_dir }}/{{ report_basename }}-metadata.txt"
+    mode: '0644'
+  delegate_to: localhost
+  become: false

@@ -1,0 +1,15 @@
+---
+# Directory to store scan reports on control node
+reports_dir: "/var/lib/oscap/reports"
+
+# Directory to store remediation playbooks
+remediation_dir: "/var/lib/oscap/remediation"
+
+# Automatically apply remediation after generating playbook
+auto_remediate: false
+
+# Backup configuration files before remediation
+backup_before_remediate: true
+
+# Maximum number of remediation retries
+remediation_retries: 2

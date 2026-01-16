@@ -1,0 +1,98 @@
+---
+# roles/oscap_remediation/tasks/apply_remediation.yml
+
+- name: Create backup of important configuration files
+  block:
+    - name: Create backup directory with timestamp
+      file:
+        path: "/var/backups/oscap-remediation/{{ remediation_timestamp }}"
+        state: directory
+        mode: '0700'
+
+    - name: Backup SSH configuration
+      copy:
+        src: "/etc/ssh/sshd_config"
+        dest: "/var/backups/oscap-remediation/{{ remediation_timestamp }}/sshd_config"
+        remote_src: yes
+      failed_when: false
+
+    - name: Backup security limits
+      copy:
+        src: "/etc/security/limits.conf"
+        dest: "/var/backups/oscap-remediation/{{ remediation_timestamp }}/limits.conf"
+        remote_src: yes
+      failed_when: false
+
+    - name: Backup PAM configuration directory
+      shell: cp -r /etc/pam.d /var/backups/oscap-remediation/{{ remediation_timestamp }}/pam.d
+      args:
+        executable: /bin/bash
+      failed_when: false
+
+    - name: Backup sysctl configuration
+      copy:
+        src: "/etc/sysctl.conf"
+        dest: "/var/backups/oscap-remediation/{{ remediation_timestamp }}/sysctl.conf"
+        remote_src: yes
+      failed_when: false
+
+    - name: Display backup location
+      debug:
+        msg: "Configuration backups saved to /var/backups/oscap-remediation/{{ remediation_timestamp }}"
+  when: backup_before_remediate | bool
+
+- name: Read remediation playbook content
+  slurp:
+    src: "{{ remediation_playbook }}"
+  register: remediation_content
+  delegate_to: localhost
+
+- name: Apply remediation tasks from generated playbook
+  include_tasks: "{{ remediation_playbook }}"
+  register: remediation_result
+  failed_when: false
+
+- name: Update remediation report with execution results
+  blockinfile:
+    path: "{{ remediation_report }}"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK - EXECUTION RESULTS"
+    block: |
+      
+      ========================================
+      Remediation Execution Results
+      ========================================
+      Execution Time: {{ ansible_date_time.iso8601 }}
+      Status: {{ 'SUCCESS' if remediation_result.failed is not defined or not remediation_result.failed else 'FAILED' }}
+      
+      Backup Location: /var/backups/oscap-remediation/{{ remediation_timestamp }}
+      
+      {% if remediation_result.failed is defined and remediation_result.failed %}
+      WARNING: Some remediation tasks failed!
+      Please review the Ansible output and logs.
+      {% else %}
+      All remediation tasks completed successfully.
+      {% endif %}
+      
+      Post-Remediation Actions Required:
+      -----------------------------------
+      1. Verify system functionality
+      2. Check service status
+      3. Review system logs
+      4. Re-run OpenSCAP scan to verify compliance
+      
+  delegate_to: localhost
+  become: false
+
+- name: Display remediation execution summary
+  debug:
+    msg:
+      - "========================================"
+      - "Remediation execution completed"
+      - "========================================"
+      - "Status: {{ 'SUCCESS' if remediation_result.failed is not defined or not remediation_result.failed else 'FAILED' }}"
+      - "Backup location: /var/backups/oscap-remediation/{{ remediation_timestamp }}"
+      - ""
+      - "Next steps:"
+      - "  1. Verify system is functioning properly"
+      - "  2. Re-run oscap_scan role to verify compliance"
+      - "  3. Check /var/log for any service warnings"

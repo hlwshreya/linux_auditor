@@ -1,0 +1,69 @@
+---
+# roles/oscap_scan/tasks/install_control_node.yml
+
+- name: Check if oscap-ssh is available on control node
+  command: which oscap-ssh
+  register: oscap_ssh_check
+  delegate_to: localhost
+  changed_when: false
+  failed_when: false
+  run_once: true
+
+- name: Verify oscap-ssh installation
+  assert:
+    that:
+      - oscap_ssh_check.rc == 0
+    fail_msg: |
+      oscap-ssh not found on control node!
+      Please install OpenSCAP utilities:
+      
+      For RHEL/CentOS/Fedora:
+        sudo yum install openscap-utils openscap-scanner
+      
+      For Ubuntu/Debian:
+        sudo apt-get install libopenscap8 python3-openscap
+      
+      For SUSE:
+        sudo zypper install openscap-utils
+    success_msg: "oscap-ssh is available on control node"
+  delegate_to: localhost
+  run_once: true
+
+- name: Get oscap version on control node
+  command: oscap --version
+  register: control_oscap_version
+  delegate_to: localhost
+  changed_when: false
+  run_once: true
+
+- name: Display oscap version on control node
+  debug:
+    msg: "OpenSCAP version on control node: {{ control_oscap_version.stdout_lines[0] }}"
+  delegate_to: localhost
+  run_once: true
+
+- name: Ensure reports directory exists on control node
+  file:
+    path: "{{ reports_dir }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Check OSCAP content path exists
+  stat:
+    path: "{{ oscap_content_path }}"
+  register: content_path_check
+  delegate_to: localhost
+  run_once: true
+
+- name: Verify OSCAP content directory
+  assert:
+    that:
+      - content_path_check.stat.exists
+      - content_path_check.stat.isdir
+    fail_msg: "OSCAP content path not found: {{ oscap_content_path }}"
+    success_msg: "OSCAP content path exists: {{ oscap_content_path }}"
+  delegate_to: localhost
+  run_once: true

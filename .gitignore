@@ -1,0 +1,25 @@
+# Ansible
+*.retry
+*.log
+*.tar.gz
+*.swp
+.DS_Store
+
+# SSH keys
+*.pem
+*.pub
+*_rsa
+*_dsa
+
+# OpenSCAP Reports
+/var/lib/oscap/reports/*.html
+/var/lib/oscap/reports/*.xml
+
+# Local temp
+tmp/
+.ansible/
+*.retry
+
+# IDE
+.vscode/
+.idea/

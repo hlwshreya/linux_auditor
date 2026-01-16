@@ -1,0 +1,48 @@
+---
+# roles/oscap_scan/tasks/install_scanner.yml
+
+- name: Check if OpenSCAP is already installed
+  command: which oscap
+  register: oscap_check
+  changed_when: false
+  failed_when: false
+
+- name: Install OpenSCAP scanner on RedHat/CentOS/Oracle Linux
+  package:
+    name:
+      - openscap-scanner
+      - openscap-utils
+    state: present
+  when: 
+    - ansible_os_family == "RedHat"
+    - oscap_check.rc != 0
+
+- name: Install OpenSCAP scanner on Debian/Ubuntu
+  apt:
+    name:
+      - libopenscap8
+      - openscap-scanner
+    state: present
+    update_cache: yes
+  when: 
+    - ansible_os_family == "Debian"
+    - oscap_check.rc != 0
+
+- name: Install OpenSCAP scanner on SUSE
+  package:
+    name:
+      - openscap-utils
+      - openscap-content
+    state: present
+  when: 
+    - ansible_os_family == "Suse"
+    - oscap_check.rc != 0
+
+- name: Verify OpenSCAP installation
+  command: oscap --version
+  register: oscap_version
+  changed_when: false
+
+- name: Display OpenSCAP version on managed node
+  debug:
+    msg: "OpenSCAP installed on {{ inventory_hostname }}: {{ oscap_version.stdout_lines[0] }}"
