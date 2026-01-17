@@ -43,7 +43,10 @@
 
 - name: Apply remediation playbook
   shell: |
-    ansible-playbook {{ remediation_playbook }}
+    ansible-playbook -i "{{ ansible_host | default(inventory_hostname) }}," \
+      -e "ansible_user={{ ansible_user }}" \
+      -e "ansible_become=yes" \
+      {{ remediation_playbook }}
   args:
     executable: /bin/bash
   delegate_to: localhost
