@@ -1,6 +1,16 @@
 ---
 # roles/oscap_remediation/tasks/apply_remediation.yml
 
+- name: Ensure required Ansible collections are installed
+  shell: |
+    ansible-galaxy collection install ansible.posix --force
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  register: collection_check
+  changed_when: false
+  failed_when: false
+
 - name: Create backup of important configuration files
   block:
     - name: Create backup directory with timestamp
