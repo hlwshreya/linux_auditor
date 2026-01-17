@@ -19,13 +19,13 @@
     msg: "No scan results found for {{ inventory_hostname }} in {{ reports_dir }}. Run oscap_scan role first."
   when: scan_results.matched == 0
 
-- name: Get latest scan
+- name: Get latest scan (ARF file)
   set_fact:
     latest_scan: "{{ (scan_results.files | sort(attribute='mtime', reverse=True) | first).path }}"
 
-- name: Display scan file being used
-  debug:
-    msg: "Using scan: {{ latest_scan }}"
+- name: Get corresponding XML file for remediation generation
+  set_fact:
+    latest_xml: "{{ latest_scan | regex_replace('-arf\\.xml
 
 - name: Set remediation file names
   set_fact:
@@ -178,9 +178,301 @@
   delegate_to: localhost
   become: false
 
+- name: Check if XML file exists (convert from ARF if needed)
+  set_fact:
+    xml_scan_file: "{{ latest_scan | regex_replace('-arf\\.xml
+
+- name: Display summary
+  debug:
+    msg:
+      - "=========================================="
+      - "Remediation Generation Complete"
+      - "=========================================="
+      - "Host: {{ inventory_hostname }}"
+      - "Total failed rules: {{ total_failed_rules }}"
+      - "Files generated:"
+      - "  - JSON: {{ failed_rules_json | basename }}"
+      - "  - Text: {{ failed_rules_txt | basename }}"
+      - "  - Playbook: {{ remediation_playbook | basename if total_failed_rules | int > 0 else 'N/A (system compliant)' }}"
+      - ""
+      - "Location: {{ remediation_dir }}/"
+
+- name: Show apply command if rules failed
+  debug:
+    msg: "To apply remediation: ansible-playbook {{ remediation_playbook }}"
+  when: total_failed_rules | int > 0
+
+- name: Show compliance message if no failures
+  debug:
+    msg: "✓ System is compliant - no remediation needed"
+  when: total_failed_rules | int == 0
+
+- name: Apply remediation if auto_remediate is true
+  include_tasks: apply_remediation.yml
+  when: 
+    - auto_remediate | default(false) | bool
+    - total_failed_rules | int > 0
+, '.xml') }}"
+
+- name: Verify XML file exists
+  stat:
+    path: "{{ xml_scan_file }}"
+  register: xml_file_check
+  delegate_to: localhost
+
 - name: Generate remediation playbook using oscap
   shell: |
-    oscap xccdf generate fix --fix-type ansible --output {{ remediation_playbook }} {{ latest_scan }}
+    if [ -f "{{ xml_scan_file }}" ]; then
+      oscap xccdf generate fix --fix-type ansible --output {{ remediation_playbook }} {{ xml_scan_file }}
+    else
+      oscap xccdf generate fix --fix-type ansible --output {{ remediation_playbook }} {{ latest_scan }}
+    fi
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  register: generate_fix
+  failed_when: generate_fix.rc != 0
+  when: total_failed_rules | int > 0
+
+- name: Display summary
+  debug:
+    msg:
+      - "=========================================="
+      - "Remediation Generation Complete"
+      - "=========================================="
+      - "Host: {{ inventory_hostname }}"
+      - "Total failed rules: {{ total_failed_rules }}"
+      - "Files generated:"
+      - "  - JSON: {{ failed_rules_json | basename }}"
+      - "  - Text: {{ failed_rules_txt | basename }}"
+      - "  - Playbook: {{ remediation_playbook | basename if total_failed_rules | int > 0 else 'N/A (system compliant)' }}"
+      - ""
+      - "Location: {{ remediation_dir }}/"
+
+- name: Show apply command if rules failed
+  debug:
+    msg: "To apply remediation: ansible-playbook {{ remediation_playbook }}"
+  when: total_failed_rules | int > 0
+
+- name: Show compliance message if no failures
+  debug:
+    msg: "✓ System is compliant - no remediation needed"
+  when: total_failed_rules | int == 0
+
+- name: Apply remediation if auto_remediate is true
+  include_tasks: apply_remediation.yml
+  when: 
+    - auto_remediate | default(false) | bool
+    - total_failed_rules | int > 0
+, '.xml') }}"
+
+- name: Display scan files being used
+  debug:
+    msg: 
+      - "ARF file (for extraction): {{ latest_scan }}"
+      - "XML file (for remediation): {{ latest_xml }}"
+
+- name: Set remediation file names
+  set_fact:
+    remediation_playbook: "{{ remediation_dir }}/{{ ansible_distribution | lower }}-{{ ansible_distribution_version }}-{{ inventory_hostname }}-{{ remediation_timestamp }}-remediation.yml"
+    failed_rules_json: "{{ remediation_dir }}/{{ ansible_distribution | lower }}-{{ ansible_distribution_version }}-{{ inventory_hostname }}-{{ remediation_timestamp }}-failed-rules.json"
+    failed_rules_txt: "{{ remediation_dir }}/{{ ansible_distribution | lower }}-{{ ansible_distribution_version }}-{{ inventory_hostname }}-{{ remediation_timestamp }}-failed-rules.txt"
+
+- name: Ensure remediation directory exists
+  file:
+    path: "{{ remediation_dir }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  become: false
+
+- name: Extract failed rules using Python and generate JSON
+  shell: |
+    python3 << 'PYTHON_SCRIPT'
+    import xml.etree.ElementTree as ET
+    import json
+    import sys
+    
+    xml_file = "{{ latest_scan }}"
+    
+    try:
+        tree = ET.parse(xml_file)
+        root = tree.getroot()
+    except Exception as e:
+        print(json.dumps({"error": str(e), "failed_rules": [], "count": 0}))
+        sys.exit(1)
+    
+    namespaces = {
+        "xccdf": "http://checklists.nist.gov/xccdf/1.2",
+        "xccdf-1.1": "http://checklists.nist.gov/xccdf/1.1"
+    }
+    
+    failed_rules = []
+    
+    # Try with namespace
+    for ns_prefix, ns_uri in namespaces.items():
+        ns = {ns_prefix: ns_uri}
+        rule_results = root.findall(f".//{ns_prefix}:rule-result", ns)
+        
+        if rule_results:
+            for rr in rule_results:
+                result = rr.find(f"{ns_prefix}:result", ns)
+                if result is None:
+                    result = rr.find(f"{ns_prefix}:r", ns)
+                
+                if result is not None and result.text:
+                    result_text = result.text.strip()
+                    rule_id = rr.attrib.get("idref", "")
+                    
+                    if result_text == "fail" and rule_id:
+                        rule_name = rule_id.replace("xccdf_org.ssgproject.content_rule_", "")
+                        failed_rules.append({
+                            "rule_id": rule_id,
+                            "rule_name": rule_name,
+                            "result": "fail"
+                        })
+            
+            if failed_rules:
+                break
+    
+    # Try without namespace if nothing found
+    if not failed_rules:
+        for rr in root.findall(".//rule-result"):
+            result = rr.find("result")
+            if result is None:
+                result = rr.find("r")
+            
+            if result is not None and result.text:
+                result_text = result.text.strip()
+                rule_id = rr.attrib.get("idref", "")
+                
+                if result_text == "fail" and rule_id:
+                    rule_name = rule_id.replace("xccdf_org.ssgproject.content_rule_", "")
+                    failed_rules.append({
+                        "rule_id": rule_id,
+                        "rule_name": rule_name,
+                        "result": "fail"
+                    })
+    
+    # Sort by rule_id
+    failed_rules_sorted = sorted(failed_rules, key=lambda x: x["rule_id"])
+    
+    # Create output JSON
+    output = {
+        "metadata": {
+            "hostname": "{{ inventory_hostname }}",
+            "distribution": "{{ ansible_distribution }} {{ ansible_distribution_version }}",
+            "scan_file": "{{ latest_scan | basename }}",
+            "extraction_date": "{{ ansible_date_time.iso8601 }}",
+            "total_failed_rules": len(failed_rules_sorted)
+        },
+        "failed_rules": failed_rules_sorted,
+        "count": len(failed_rules_sorted)
+    }
+    
+    print(json.dumps(output, indent=2))
+    PYTHON_SCRIPT
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  register: python_json_output
+  changed_when: false
+  failed_when: python_json_output.rc != 0
+
+- name: Parse JSON output
+  set_fact:
+    failed_rules_data: "{{ python_json_output.stdout | from_json }}"
+
+- name: Set failed rules count and list
+  set_fact:
+    total_failed_rules: "{{ failed_rules_data.count }}"
+    failed_rules_list: "{{ failed_rules_data.failed_rules | map(attribute='rule_id') | list }}"
+
+- name: Display extraction results
+  debug:
+    msg:
+      - "Failed Rules Extraction Complete"
+      - "Total failed rules: {{ total_failed_rules }}"
+      - "Extraction method: Python XML parser"
+      - "First 10 rules: {{ failed_rules_list[:10] }}"
+
+- name: Save failed rules JSON file
+  copy:
+    content: "{{ failed_rules_data | to_nice_json }}"
+    dest: "{{ failed_rules_json }}"
+    mode: '0644'
+  delegate_to: localhost
+  become: false
+
+- name: Save failed rules text file
+  copy:
+    content: |
+      Failed Rules (Sorted Alphabetically)
+      ====================================
+      Total: {{ total_failed_rules }}
+      Source: {{ latest_scan | basename }}
+      Date: {{ ansible_date_time.iso8601 }}
+      
+      {% for rule in failed_rules_data.failed_rules %}
+      {{ "%04d" | format(loop.index) }}. {{ rule.rule_id }}
+           Short name: {{ rule.rule_name }}
+      {% endfor %}
+    dest: "{{ failed_rules_txt }}"
+    mode: '0644'
+  delegate_to: localhost
+  become: false
+
+- name: Check if XML file exists (convert from ARF if needed)
+  set_fact:
+    xml_scan_file: "{{ latest_scan | regex_replace('-arf\\.xml
+
+- name: Display summary
+  debug:
+    msg:
+      - "=========================================="
+      - "Remediation Generation Complete"
+      - "=========================================="
+      - "Host: {{ inventory_hostname }}"
+      - "Total failed rules: {{ total_failed_rules }}"
+      - "Files generated:"
+      - "  - JSON: {{ failed_rules_json | basename }}"
+      - "  - Text: {{ failed_rules_txt | basename }}"
+      - "  - Playbook: {{ remediation_playbook | basename if total_failed_rules | int > 0 else 'N/A (system compliant)' }}"
+      - ""
+      - "Location: {{ remediation_dir }}/"
+
+- name: Show apply command if rules failed
+  debug:
+    msg: "To apply remediation: ansible-playbook {{ remediation_playbook }}"
+  when: total_failed_rules | int > 0
+
+- name: Show compliance message if no failures
+  debug:
+    msg: "✓ System is compliant - no remediation needed"
+  when: total_failed_rules | int == 0
+
+- name: Apply remediation if auto_remediate is true
+  include_tasks: apply_remediation.yml
+  when: 
+    - auto_remediate | default(false) | bool
+    - total_failed_rules | int > 0
+, '.xml') }}"
+
+- name: Verify XML file exists
+  stat:
+    path: "{{ xml_scan_file }}"
+  register: xml_file_check
+  delegate_to: localhost
+
+- name: Generate remediation playbook using oscap
+  shell: |
+    if [ -f "{{ xml_scan_file }}" ]; then
+      oscap xccdf generate fix --fix-type ansible --output {{ remediation_playbook }} {{ xml_scan_file }}
+    else
+      oscap xccdf generate fix --fix-type ansible --output {{ remediation_playbook }} {{ latest_scan }}
+    fi
   args:
     executable: /bin/bash
   delegate_to: localhost
