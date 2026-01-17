@@ -188,15 +188,27 @@
   delegate_to: localhost
   become: false
 
-- name: Generate remediation playbook using oscap (uses XML file)
+- name: Generate remediation playbook using oscap with result-id
   shell: |
-    oscap xccdf generate fix --fix-type ansible --output {{ remediation_playbook }} {{ latest_xml }}
+    oscap xccdf generate fix \
+      --fix-type ansible \
+      --result-id {{ remediation_result_id }} \
+      --output {{ remediation_playbook }} \
+      {{ latest_xml }}
   args:
     executable: /bin/bash
   delegate_to: localhost
   become: false
   register: generate_fix
   failed_when: generate_fix.rc != 0
+  when: total_failed_rules | int > 0
+
+- name: Display remediation generation details
+  debug:
+    msg:
+      - "Remediation playbook generated successfully"
+      - "Profile used: {{ remediation_result_id }}"
+      - "Output: {{ remediation_playbook }}"
   when: total_failed_rules | int > 0
 
 - name: Display summary
