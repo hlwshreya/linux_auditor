@@ -39,57 +39,24 @@
     - name: Display backup location
       debug:
         msg: "Configuration backups saved to /var/backups/oscap-remediation/{{ remediation_timestamp }}"
-  when: backup_before_remediate | bool
+  when: backup_before_remediate | default(true) | bool
 
-- name: Read remediation playbook content
-  slurp:
-    src: "{{ remediation_playbook }}"
-  register: remediation_content
+- name: Apply remediation playbook
+  shell: |
+    ansible-playbook {{ remediation_playbook }}
+  args:
+    executable: /bin/bash
   delegate_to: localhost
-
-- name: Apply remediation tasks from generated playbook
-  include_tasks: "{{ remediation_playbook }}"
   register: remediation_result
-  failed_when: false
-
-- name: Update remediation report with execution results
-  blockinfile:
-    path: "{{ remediation_report }}"
-    marker: "# {mark} ANSIBLE MANAGED BLOCK - EXECUTION RESULTS"
-    block: |
-      
-      ========================================
-      Remediation Execution Results
-      ========================================
-      Execution Time: {{ ansible_date_time.iso8601 }}
-      Status: {{ 'SUCCESS' if remediation_result.failed is not defined or not remediation_result.failed else 'FAILED' }}
-      
-      Backup Location: /var/backups/oscap-remediation/{{ remediation_timestamp }}
-      
-      {% if remediation_result.failed is defined and remediation_result.failed %}
-      WARNING: Some remediation tasks failed!
-      Please review the Ansible output and logs.
-      {% else %}
-      All remediation tasks completed successfully.
-      {% endif %}
-      
-      Post-Remediation Actions Required:
-      -----------------------------------
-      1. Verify system functionality
-      2. Check service status
-      3. Review system logs
-      4. Re-run OpenSCAP scan to verify compliance
-      
-  delegate_to: localhost
-  become: false
+  ignore_errors: yes
 
 - name: Display remediation execution summary
   debug:
     msg:
-      - "========================================"
+      - "=========================================="
       - "Remediation execution completed"
-      - "========================================"
-      - "Status: {{ 'SUCCESS' if remediation_result.failed is not defined or not remediation_result.failed else 'FAILED' }}"
+      - "=========================================="
+      - "Status: {{ 'SUCCESS' if remediation_result.rc == 0 else 'FAILED' }}"
       - "Backup location: /var/backups/oscap-remediation/{{ remediation_timestamp }}"
       - ""
       - "Next steps:"
