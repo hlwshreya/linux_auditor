@@ -149,6 +149,10 @@
   delegate_to: localhost
   become: false
 
+- name: Set apply command
+  set_fact:
+    apply_msg: "{{ 'Apply: ansible-playbook ' + remediation_playbook if total_failed_rules | int > 0 else 'System is compliant' }}"
+
 - name: Display summary
   debug:
     msg:
@@ -156,7 +160,7 @@
       - "Failed rules: {{ total_failed_rules }}"
       - "Playbook: {{ remediation_playbook | basename }}"
       - "Report: {{ remediation_report | basename }}"
-      - "{{ 'Apply: ansible-playbook ' + remediation_playbook if total_failed_rules | int > 0 else '✓ System is compliant' }}"
+      - "{{ apply_msg }}"
 
 - name: Apply remediation if auto_remediate is true
   include_tasks: apply_remediation.yml
