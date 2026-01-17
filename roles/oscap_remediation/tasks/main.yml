@@ -156,11 +156,7 @@
       - "Failed rules: {{ total_failed_rules }}"
       - "Playbook: {{ remediation_playbook | basename }}"
       - "Report: {{ remediation_report | basename }}"
-{% if total_failed_rules | int > 0 %}
-      - "Apply: ansible-playbook {{ remediation_playbook }}"
-{% else %}
-      - "✓ System is compliant"
-{% endif %}
+      - "{{ 'Apply: ansible-playbook ' + remediation_playbook if total_failed_rules | int > 0 else '✓ System is compliant' }}"
 
 - name: Apply remediation if auto_remediate is true
   include_tasks: apply_remediation.yml
