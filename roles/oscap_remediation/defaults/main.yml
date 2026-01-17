@@ -1,4 +1,6 @@
 ---
+# roles/oscap_remediation/defaults/main.yml
+
 # Directory to store scan reports on control node
 reports_dir: "/var/lib/oscap/reports"
 
@@ -13,3 +15,16 @@ backup_before_remediate: true
 
 # Maximum number of remediation retries
 remediation_retries: 2
+
+# Result ID for remediation generation
+# Default: CIS Level 1 Server profile
+# Options: 
+#   - xccdf_org.open-scap.testresult_xccdf_org.ssgproject.content_profile_cis_level1_server
+#   - xccdf_org.open-scap.testresult_xccdf_org.ssgproject.content_profile_cis_level2_server
+#   - xccdf_org.open-scap.testresult_xccdf_org.ssgproject.content_profile_cis_level1_workstation
+#   - xccdf_org.open-scap.testresult_xccdf_org.ssgproject.content_profile_pci-dss
+#   - xccdf_org.open-scap.testresult_xccdf_org.ssgproject.content_profile_stig
+remediation_result_id: "xccdf_org.open-scap.testresult_xccdf_org.ssgproject.content_profile_cis_level1_server"
+
+# Create system snapshot before remediation (if supported)
+create_snapshot: false
