@@ -10,42 +10,67 @@ GUIDES_DIR = "/opt/scap-security-guide-0.1.79/guides"
 
 def get_available_profiles():
     """Scans the directory for .html guide files."""
+    if not os.path.exists(GUIDES_DIR):
+        print(f"ERROR: Directory not found: {GUIDES_DIR}")
+        return []
     files = [f for f in os.listdir(GUIDES_DIR) if f.endswith('.html')]
     profiles = []
     for f in files:
-        # Extract a clean name from the filename
         display_name = f.replace('ssg-', '').replace('-guide-', ' ').replace('.html', '').replace('_', ' ').title()
         profiles.append({'id': f, 'name': display_name})
     return sorted(profiles, key=lambda x: x['name'])
 
 def parse_guide(filename):
-    """Parses the OpenSCAP HTML file and extracts rules into a JSON-like format."""
+    """Robust parser for OpenSCAP Bootstrap-based HTML guides."""
     path = os.path.join(GUIDES_DIR, filename)
-    if not os.path.exists(path):
-        return None
+    print(f"DEBUG: Parsing file: {path}")
     
     with open(path, 'r', encoding='utf-8') as f:
         soup = BeautifulSoup(f, 'html.parser')
 
     rules_data = []
-    # OpenSCAP guides usually put rules in specific containers
-    # Note: Selectors might need minor adjustment based on specific SCAP versions
-    rules = soup.find_all('div', class_='rule-description') or soup.find_all('div', id=re.compile('^rule-'))
     
-    for rule in rules:
-        title_tag = rule.find_previous(['h2', 'h3'])
+    # OpenSCAP guides typically use 'panel-default' for each rule block
+    # and IDs starting with 'rule-'
+    rule_panels = soup.find_all('div', class_='panel-default')
+    
+    for panel in rule_panels:
+        # Check if this panel is actually a rule (OpenSCAP rules have specific IDs)
+        panel_id = panel.get('id', '')
+        if not panel_id.startswith('rule-'):
+            continue
+
+        # 1. Extract Title
+        title_elem = panel.find('h3', class_='panel-title')
+        title = title_elem.get_text(strip=True) if title_elem else "Unnamed Rule"
+
+        # 2. Extract Severity
+        # Usually looks like <span class="label label-warning">medium</span>
         severity = "Unknown"
-        if "low" in rule.get_text().lower(): severity = "Low"
-        if "medium" in rule.get_text().lower(): severity = "Medium"
-        if "high" in rule.get_text().lower(): severity = "High"
+        sev_badge = panel.find('span', class_='label')
+        if sev_badge:
+            text = sev_badge.get_text().lower()
+            if 'high' in text or 'danger' in text: severity = "High"
+            elif 'medium' in text or 'warning' in text: severity = "Medium"
+            elif 'low' in text or 'info' in text: severity = "Low"
+
+        # 3. Extract Description
+        # Description is usually in a div with class 'panel-body' or similar
+        body = panel.find('div', class_='panel-body')
+        description = "No description available."
+        if body:
+            # We try to find the specific description text, or just take the first few paragraphs
+            desc_text = body.get_text(strip=True)
+            description = (desc_text[:350] + '...') if len(desc_text) > 350 else desc_text
 
         rules_data.append({
-            'title': title_tag.get_text().strip() if title_tag else "Unnamed Rule",
+            'title': title,
             'severity': severity,
-            'description': rule.get_text()[:300] + "...",
-            'id': rule.get('id', 'N/A')
+            'description': description,
+            'id': panel_id
         })
     
+    print(f"DEBUG: Found {len(rules_data)} rules in {filename}")
     return rules_data
 
 # --- HTML TEMPLATE (Frontend) ---
@@ -61,20 +86,21 @@ HTML_TEMPLATE = """
 <body class="bg-slate-100 font-sans text-slate-900" x-data="scapApp()">
 
     <div class="flex h-screen overflow-hidden">
-        <aside class="w-80 bg-slate-900 text-white flex flex-col">
-            <div class="p-6 border-b border-slate-700">
+        <aside class="w-80 bg-slate-900 text-white flex flex-col shadow-2xl">
+            <div class="p-6 border-b border-slate-700 bg-slate-950">
                 <h1 class="text-xl font-bold tracking-tight">SCAP Explorer</h1>
-                <p class="text-xs text-slate-400 mt-1">v0.1.79 Guides</p>
+                <p class="text-xs text-slate-400 mt-1 uppercase tracking-widest font-semibold">v0.1.79 Local Library</p>
             </div>
             
             <div class="p-4 flex-grow overflow-y-auto">
-                <h2 class="text-xs font-semibold text-slate-500 uppercase mb-4">Available Profiles</h2>
+                <h2 class="text-xs font-semibold text-slate-500 uppercase mb-4 px-3">Available Profiles</h2>
                 <div class="space-y-1">
                     <template x-for="profile in profiles" :key="profile.id">
                         <button @click="loadProfile(profile.id)" 
-                                :class="selectedProfile === profile.id ? 'bg-blue-600 text-white' : 'hover:bg-slate-800 text-slate-300'"
-                                class="w-full text-left px-3 py-2 rounded text-sm transition-colors duration-150">
-                            <span x-text="profile.name"></span>
+                                :class="selectedProfile === profile.id ? 'bg-blue-600 text-white shadow-lg' : 'hover:bg-slate-800 text-slate-400 hover:text-white'"
+                                class="w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all duration-200 flex items-center">
+                            <i class="fas fa-file-shield mr-3 opacity-50"></i>
+                            <span x-text="profile.name" class="truncate"></span>
                         </button>
                     </template>
                 </div>
@@ -82,46 +108,58 @@ HTML_TEMPLATE = """
         </aside>
 
         <main class="flex-grow flex flex-col overflow-hidden">
-            <header class="bg-white shadow-sm z-10 p-4 flex justify-between items-center">
-                <div class="flex items-center space-x-4">
-                    <input type="text" x-model="searchQuery" placeholder="Search rules..." 
-                           class="border border-slate-300 rounded-md px-4 py-2 text-sm w-96 focus:ring-2 focus:ring-blue-500 outline-none">
-                    
-                    <div class="flex bg-slate-100 rounded-md p-1 border">
-                        <button @click="filterSeverity = 'all'" :class="filterSeverity === 'all' ? 'bg-white shadow-sm' : ''" class="px-3 py-1 text-xs rounded font-medium">All</button>
-                        <button @click="filterSeverity = 'High'" :class="filterSeverity === 'High' ? 'bg-white shadow-sm text-red-600' : ''" class="px-3 py-1 text-xs rounded font-medium">High</button>
-                        <button @click="filterSeverity = 'Medium'" :class="filterSeverity === 'Medium' ? 'bg-white shadow-sm text-amber-600' : ''" class="px-3 py-1 text-xs rounded font-medium">Med</button>
+            <header class="bg-white shadow-sm z-10 p-6 flex justify-between items-center border-b">
+                <div class="flex items-center space-x-6">
+                    <div>
+                        <h2 class="text-sm font-bold text-slate-400 uppercase tracking-tighter">Current Profile</h2>
+                        <p class="text-lg font-bold text-slate-800" x-text="profiles.find(p => p.id === selectedProfile)?.name || 'Select a profile'"></p>
                     </div>
+                    
+                    <div class="h-10 w-px bg-slate-200"></div>
+
+                    <input type="text" x-model="searchQuery" placeholder="Search rules or IDs..." 
+                           class="border border-slate-200 rounded-xl px-4 py-2.5 text-sm w-80 focus:ring-4 focus:ring-blue-100 focus:border-blue-500 outline-none transition-all">
                 </div>
-                <div class="text-xs text-slate-500">
-                    Showing <span x-text="filteredRules.length" class="font-bold text-slate-900"></span> rules
+                
+                <div class="flex items-center space-x-3 bg-slate-100 rounded-xl p-1.5 border border-slate-200">
+                    <button @click="filterSeverity = 'all'" :class="filterSeverity === 'all' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500'" class="px-4 py-1.5 text-xs rounded-lg font-bold transition-all">ALL</button>
+                    <button @click="filterSeverity = 'High'" :class="filterSeverity === 'High' ? 'bg-white shadow-sm text-red-600' : 'text-slate-500'" class="px-4 py-1.5 text-xs rounded-lg font-bold transition-all">HIGH</button>
+                    <button @click="filterSeverity = 'Medium'" :class="filterSeverity === 'Medium' ? 'bg-white shadow-sm text-amber-600' : 'text-slate-500'" class="px-4 py-1.5 text-xs rounded-lg font-bold transition-all">MED</button>
                 </div>
             </header>
 
-            <div class="flex-grow overflow-y-auto p-8">
-                <div x-show="loading" class="flex items-center justify-center h-64 text-slate-400">
-                    <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mr-3"></div>
-                    Loading profile data...
+            <div class="flex-grow overflow-y-auto p-8 bg-slate-50/50">
+                <div x-show="loading" class="flex flex-col items-center justify-center h-full text-slate-400 animate-pulse">
+                    <div class="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+                    <p class="font-medium">Analyzing Security Guide...</p>
                 </div>
 
-                <div class="grid grid-cols-1 gap-6" x-show="!loading">
+                <div x-show="!loading && filteredRules.length === 0" class="flex flex-col items-center justify-center h-full text-slate-400">
+                    <p class="text-lg font-medium">No rules match your search or filters.</p>
+                </div>
+
+                <div class="grid grid-cols-1 xl:grid-cols-2 gap-6" x-show="!loading">
                     <template x-for="rule in filteredRules" :key="rule.id">
-                        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 hover:shadow-md transition-shadow duration-200">
-                            <div class="flex justify-between items-start mb-3">
+                        <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 hover:shadow-xl hover:border-blue-200 transition-all duration-300 group">
+                            <div class="flex justify-between items-start mb-4">
                                 <span :class="{
-                                    'bg-red-50 text-red-700': rule.severity === 'High',
-                                    'bg-amber-50 text-amber-700': rule.severity === 'Medium',
-                                    'bg-emerald-50 text-emerald-700': rule.severity === 'Low',
-                                    'bg-slate-50 text-slate-700': rule.severity === 'Unknown'
-                                }" class="text-[10px] font-bold uppercase px-2 py-1 rounded tracking-widest" x-text="rule.severity"></span>
-                                <span class="text-[10px] font-mono text-slate-400" x-text="rule.id"></span>
+                                    'bg-red-100 text-red-700': rule.severity === 'High',
+                                    'bg-amber-100 text-amber-700': rule.severity === 'Medium',
+                                    'bg-emerald-100 text-emerald-700': rule.severity === 'Low',
+                                    'bg-slate-100 text-slate-700': rule.severity === 'Unknown'
+                                }" class="text-[10px] font-black uppercase px-2.5 py-1 rounded-md tracking-wider" x-text="rule.severity"></span>
+                                <span class="text-[10px] font-mono text-slate-300 group-hover:text-slate-500 transition-colors" x-text="rule.id"></span>
                             </div>
-                            <h3 class="text-lg font-bold text-slate-900 mb-2" x-text="rule.title"></h3>
-                            <p class="text-sm text-slate-600 leading-relaxed mb-4" x-text="rule.description"></p>
-                            <div class="flex space-x-2">
-                                <button class="text-xs font-bold text-blue-600 hover:underline">Full Documentation</button>
-                                <span class="text-slate-300">|</span>
-                                <button class="text-xs font-bold text-blue-600 hover:underline">Copy Remediation</button>
+                            <h3 class="text-base font-bold text-slate-900 mb-3 leading-snug group-hover:text-blue-600 transition-colors" x-text="rule.title"></h3>
+                            <p class="text-sm text-slate-500 leading-relaxed mb-6" x-text="rule.description"></p>
+                            
+                            <div class="pt-4 border-t border-slate-50 flex justify-between items-center">
+                                <button class="text-xs font-bold text-blue-600 hover:text-blue-800 flex items-center">
+                                    Full Documentation <i class="fas fa-arrow-right ml-2 text-[10px]"></i>
+                                </button>
+                                <button class="p-2 hover:bg-slate-100 rounded-lg text-slate-400 transition-colors" title="Copy ID">
+                                    <i class="far fa-copy text-sm"></i>
+                                </button>
                             </div>
                         </div>
                     </template>
@@ -152,10 +190,15 @@ HTML_TEMPLATE = """
                 loadProfile(id) {
                     this.selectedProfile = id;
                     this.loading = true;
+                    this.rules = []; // Clear current rules while loading
                     fetch(`/api/rules/${id}`)
                         .then(res => res.json())
                         .then(data => {
                             this.rules = data;
+                            this.loading = false;
+                        })
+                        .catch(err => {
+                            console.error("Error loading rules:", err);
                             this.loading = false;
                         });
                 },
@@ -171,6 +214,7 @@ HTML_TEMPLATE = """
             }
         }
     </script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </body>
 </html>
 """
@@ -190,6 +234,4 @@ def api_rules(filename):
     return jsonify(data)
 
 if __name__ == '__main__':
-    print(f"Starting SCAP Explorer on http://localhost:5000")
-    print(f"Scanning directory: {GUIDES_DIR}")
     app.run(debug=True, port=5000)
